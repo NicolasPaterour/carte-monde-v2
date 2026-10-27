@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "Carte du monde",
+    "slug": "carte-monde",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {},
+    "plugins": [
+      "expo-status-bar"
+    ]
+  }
+}
