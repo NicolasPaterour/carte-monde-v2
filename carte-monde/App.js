@@ -1,4 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, {
+  forwardRef,
+  memo,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -15,6 +23,7 @@ import Svg, {
   Polyline as SvgPolyline,
 } from 'react-native-svg';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { cacheActivities, getCachedActivities } from './services/ActivityCache';
 import GarminService from './services/GarminService';
 
@@ -29,6 +38,15 @@ const INITIAL_REGION = {
 const garminService = new GarminService();
 
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppContent />
+    </SafeAreaProvider>
+  );
+}
+
+function AppContent() {
+  const insets = useSafeAreaInsets();
   const mapRef = useRef(null);
   const trackRequestId = useRef(0);
   const [query, setQuery] = useState('');
@@ -40,7 +58,6 @@ export default function App() {
   const [selectedActivity, setSelectedActivity] = useState(null);
   const [activityTrack, setActivityTrack] = useState([]);
   const [elevationProfile, setElevationProfile] = useState([]);
-  const [selectedProfileIndex, setSelectedProfileIndex] = useState(null);
   const [isElevationProfileOpen, setIsElevationProfileOpen] = useState(true);
   const [isLoadingTrack, setIsLoadingTrack] = useState(false);
   const [activitiesLoaded, setActivitiesLoaded] = useState(false);
@@ -201,7 +218,7 @@ export default function App() {
     setActivitiesOpen(false);
     setActivityTrack([]);
     setElevationProfile([]);
-    setSelectedProfileIndex(null);
+    mapRef.current?.setCursorCoordinate(null);
     setIsElevationProfileOpen(true);
     setTrackMessage('');
     setIsLoadingTrack(true);
@@ -213,7 +230,7 @@ export default function App() {
       }
       setActivityTrack(track.coordinates);
       setElevationProfile(track.elevationProfile);
-      setSelectedProfileIndex(track.elevationProfile.length > 0 ? 0 : null);
+      mapRef.current?.setCursorCoordinate(track.elevationProfile[0]?.coordinate ?? null);
       mapRef.current?.fitToCoordinates(track.coordinates, {
         edgePadding: { top: 220, right: 48, bottom: 48, left: 48 },
         animated: true,
@@ -240,49 +257,23 @@ export default function App() {
   return (
     <View style={styles.container}>
       <StatusBar style="dark" />
-      <MapView
+      <ActivityMap
         ref={mapRef}
-        style={styles.map}
-        initialRegion={INITIAL_REGION}
-        showsUserLocation
-        showsCompass
-        showsScale
-        mapType="standard" // essaie aussi "satellite" ou "hybrid"
-      >
-        {place && (
-          <Marker
-            coordinate={{ latitude: place.latitude, longitude: place.longitude }}
-            title={place.title}
-            description={place.description}
-          />
-        )}
-        {activityTrack.length > 1 && (
-          <Polyline
-            coordinates={activityTrack}
-            strokeColor="#2563eb"
-            strokeWidth={4}
-          />
-        )}
-        {selectedProfileIndex != null &&
-          elevationProfile[selectedProfileIndex]?.coordinate && (
-            <Marker
-              coordinate={elevationProfile[selectedProfileIndex].coordinate}
-              anchor={{ x: 0.5, y: 0.5 }}
-              tracksViewChanges={false}
-            >
-              <View style={styles.trackCursorMarker} />
-            </Marker>
-          )}
-      </MapView>
+        place={place}
+        activityTrack={activityTrack}
+      />
       {selectedActivity && (
         <ElevationProfilePanel
+          key={selectedActivity.id}
+          bottomInset={insets.bottom}
           activity={selectedActivity}
           profile={elevationProfile}
           isLoading={isLoadingTrack}
           error={trackMessage}
           isOpen={isElevationProfileOpen}
-          selectedIndex={selectedProfileIndex}
-          onSelectPoint={setSelectedProfileIndex}
+          onSelectCoordinate={(coordinate) =>
+            mapRef.current?.setCursorCoordinate(coordinate)
+          }
           onToggle={() => setIsElevationProfileOpen((isOpen) => !isOpen)}
         />
       )}
@@ -405,27 +396,115 @@ export default function App() {
   );
 }
 
+const ActivityMap = forwardRef(function ActivityMap(
+  { place, activityTrack },
+  ref
+) {
+  const nativeMapRef = useRef(null);
+  const [cursorCoordinate, setCursorCoordinate] = useState(null);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      animateToRegion: (...args) => nativeMapRef.current?.animateToRegion(...args),
+      fitToCoordinates: (...args) =>
+        nativeMapRef.current?.fitToCoordinates(...args),
+      setCursorCoordinate,
+    }),
+    []
+  );
+
+  return (
+    <MapView
+      ref={nativeMapRef}
+      style={styles.map}
+      initialRegion={INITIAL_REGION}
+      showsUserLocation
+      showsCompass
+      showsScale
+      mapType="standard"
+    >
+      {place && (
+        <Marker
+          coordinate={{ latitude: place.latitude, longitude: place.longitude }}
+          title={place.title}
+          description={place.description}
+        />
+      )}
+      {activityTrack.length > 1 && <ActivityPolyline coordinates={activityTrack} />}
+      {cursorCoordinate && <TrackCursorMarker coordinate={cursorCoordinate} />}
+    </MapView>
+  );
+});
+
+const ActivityPolyline = memo(function ActivityPolyline({ coordinates }) {
+  return (
+    <Polyline
+      coordinates={coordinates}
+      strokeColor="#2563eb"
+      strokeWidth={4}
+    />
+  );
+});
+
+const TrackCursorMarker = memo(function TrackCursorMarker({ coordinate }) {
+  return (
+    <Marker
+      coordinate={coordinate}
+      anchor={{ x: 0.5, y: 0.5 }}
+      tracksViewChanges={false}
+    >
+      <View style={styles.trackCursorMarker} />
+    </Marker>
+  );
+});
+
 function ElevationProfilePanel({
+  bottomInset,
   activity,
   profile,
   isLoading,
   error,
   isOpen,
-  selectedIndex,
-  onSelectPoint,
+  onSelectCoordinate,
   onToggle,
 }) {
-  const validProfile = profile.filter(
-    (point) => Number.isFinite(point.distance) && Number.isFinite(point.altitude)
+  const validProfile = useMemo(
+    () =>
+      profile.filter(
+        (point) =>
+          Number.isFinite(point.distance) && Number.isFinite(point.altitude)
+      ),
+    [profile]
   );
-  const minimumElevation =
-    validProfile.length > 0
-      ? Math.floor(Math.min(...validProfile.map((point) => point.altitude)))
-      : 0;
-  const maximumElevation =
-    validProfile.length > 0
-      ? Math.ceil(Math.max(...validProfile.map((point) => point.altitude)))
-      : 0;
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [profile]);
+  const minimumElevation = useMemo(
+    () =>
+      validProfile.length > 0
+        ? Math.floor(
+            validProfile.reduce(
+              (minimum, point) => Math.min(minimum, point.altitude),
+              Infinity
+            )
+          )
+        : 0,
+    [validProfile]
+  );
+  const maximumElevation = useMemo(
+    () =>
+      validProfile.length > 0
+        ? Math.ceil(
+            validProfile.reduce(
+              (maximum, point) => Math.max(maximum, point.altitude),
+              -Infinity
+            )
+          )
+        : 0,
+    [validProfile]
+  );
   const distanceKm =
     validProfile.length > 0
       ? validProfile[validProfile.length - 1].distance / 1000
@@ -434,20 +513,45 @@ function ElevationProfilePanel({
   const [chartWidth, setChartWidth] = React.useState(0);
   const chartHeight = 112;
   const chartPadding = 5;
-  const chartPoints = validProfile
-    .map((point) => {
-      const x =
-        chartPadding +
-        (point.distance / Math.max(1, validProfile[validProfile.length - 1].distance)) *
-          Math.max(0, chartWidth - chartPadding * 2);
-      const y =
-        chartHeight -
-        chartPadding -
-        ((point.altitude - minimumElevation) / elevationRange) *
-          (chartHeight - chartPadding * 2);
-      return `${x},${y}`;
-    })
-    .join(' ');
+  const elevationTicks = useMemo(
+    () =>
+      Array.from({ length: 5 }, (_, index) => {
+        const progress = index / 4;
+        return {
+          altitude: Math.round(maximumElevation - progress * elevationRange),
+          y:
+            chartPadding +
+            progress * (chartHeight - chartPadding * 2),
+        };
+      }),
+    [chartHeight, chartPadding, elevationRange, maximumElevation]
+  );
+  const chartPoints = useMemo(
+    () =>
+      validProfile
+        .map((point) => {
+          const x =
+            chartPadding +
+            (point.distance /
+              Math.max(1, validProfile[validProfile.length - 1].distance)) *
+              Math.max(0, chartWidth - chartPadding * 2);
+          const y =
+            chartHeight -
+            chartPadding -
+            ((point.altitude - minimumElevation) / elevationRange) *
+              (chartHeight - chartPadding * 2);
+          return `${x},${y}`;
+        })
+        .join(' '),
+    [
+      chartHeight,
+      chartPadding,
+      chartWidth,
+      elevationRange,
+      minimumElevation,
+      validProfile,
+    ]
+  );
   const selectedPoint =
     selectedIndex == null ? null : validProfile[selectedIndex] ?? null;
   const selectedX =
@@ -483,13 +587,17 @@ function ElevationProfilePanel({
         closestIndex = index;
       }
     }
-    onSelectPoint(closestIndex);
+    setSelectedIndex(closestIndex);
+    onSelectCoordinate(validProfile[closestIndex]?.coordinate ?? null);
   };
   const adjustSelectedPoint = (direction) => {
     const currentIndex = selectedIndex ?? 0;
-    onSelectPoint(
-      Math.max(0, Math.min(validProfile.length - 1, currentIndex + direction))
+    const nextIndex = Math.max(
+      0,
+      Math.min(validProfile.length - 1, currentIndex + direction)
     );
+    setSelectedIndex(nextIndex);
+    onSelectCoordinate(validProfile[nextIndex]?.coordinate ?? null);
   };
   const handleAccessibilityAction = (event) => {
     if (event.nativeEvent.actionName === 'increment') {
@@ -500,7 +608,7 @@ function ElevationProfilePanel({
   };
 
   return (
-    <View style={styles.elevationPanel}>
+    <View style={[styles.elevationPanel, { bottom: Math.max(24, bottomInset + 12) }]}>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={
@@ -536,8 +644,17 @@ function ElevationProfilePanel({
             <>
               <View style={styles.elevationChartRow}>
                 <View style={styles.elevationAxis}>
-                  <Text style={styles.elevationAxisLabel}>{maximumElevation} m</Text>
-                  <Text style={styles.elevationAxisLabel}>{minimumElevation} m</Text>
+                  {elevationTicks.map((tick, index) => (
+                    <Text
+                      key={`${tick.altitude}-${index}`}
+                      style={[
+                        styles.elevationAxisLabel,
+                        { top: tick.y - 6 },
+                      ]}
+                    >
+                      {tick.altitude} m
+                    </Text>
+                  ))}
                 </View>
                 <View
                   style={styles.elevationChart}
@@ -568,17 +685,19 @@ function ElevationProfilePanel({
                 >
                   {chartWidth > 0 && (
                     <>
-                      <View style={styles.elevationGridLineTop} />
-                      <View style={styles.elevationGridLineBottom} />
                       <Svg width={chartWidth} height={chartHeight}>
-                        <SvgPolyline
-                          points={chartPoints}
-                          fill="none"
-                          stroke="#2563eb"
-                          strokeWidth={3}
-                          strokeLinejoin="round"
-                          strokeLinecap="round"
-                        />
+                        {elevationTicks.map((tick, index) => (
+                          <SvgLine
+                            key={`${tick.altitude}-${index}`}
+                            x1={0}
+                            y1={tick.y}
+                            x2={chartWidth}
+                            y2={tick.y}
+                            stroke="#e5e7eb"
+                            strokeWidth={1}
+                          />
+                        ))}
+                        <ElevationLine points={chartPoints} />
                         {selectedPoint && (
                           <>
                             <SvgLine
@@ -622,6 +741,19 @@ function ElevationProfilePanel({
     </View>
   );
 }
+
+const ElevationLine = memo(function ElevationLine({ points }) {
+  return (
+    <SvgPolyline
+      points={points}
+      fill="none"
+      stroke="#2563eb"
+      strokeWidth={3}
+      strokeLinejoin="round"
+      strokeLinecap="round"
+    />
+  );
+});
 
 function formatActivityDate(value) {
   return new Intl.DateTimeFormat('fr-FR', {
@@ -734,35 +866,22 @@ const styles = StyleSheet.create({
     alignItems: 'stretch',
   },
   elevationAxis: {
+    position: 'relative',
     width: 46,
     height: 112,
-    justifyContent: 'space-between',
-    paddingVertical: 2,
   },
   elevationAxisLabel: {
+    position: 'absolute',
+    left: 0,
     color: '#666',
     fontSize: 10,
+    lineHeight: 12,
+    includeFontPadding: false,
   },
   elevationChart: {
     flex: 1,
     height: 112,
     overflow: 'hidden',
-  },
-  elevationGridLineTop: {
-    position: 'absolute',
-    top: 5,
-    left: 0,
-    right: 0,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderColor: '#d1d5db',
-  },
-  elevationGridLineBottom: {
-    position: 'absolute',
-    bottom: 5,
-    left: 0,
-    right: 0,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderColor: '#d1d5db',
   },
   distanceLabels: {
     flexDirection: 'row',
