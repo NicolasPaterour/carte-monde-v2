@@ -83,6 +83,7 @@ test('downloads and decodes an activity FIT file with GPS and elevation', async 
       { distance: 0, altitude: 120 },
       { distance: 1000, altitude: 130 },
     ],
+    performanceProfile: [],
   };
   const api = new GarminPersonalApi('test-key', {
     fetchImpl: async (url, options) => {
@@ -177,9 +178,12 @@ test('decodes FIT distance and altitude values into a sampled profile', async ()
     distance: 1500 + index * 10,
     altitude: 100 + index / 10,
     enhancedAltitude: 110 + index / 10,
+    enhancedSpeed: 5 + index / 10,
+    heartRate: 120 + index / 10,
   }));
   records[12].altitude = null;
   records[12].enhancedAltitude = null;
+  records[12].heartRate = 0;
 
   const result = await decodeActivityArchive(archive, async (bytes) => {
     assert.deepEqual(Array.from(bytes), [1, 2, 3]);
@@ -199,4 +203,19 @@ test('decodes FIT distance and altitude values into a sampled profile', async ()
     coordinate: { latitude: 48.85, longitude: 2.35 },
   });
   assert.equal(result.elevationProfile.some((point) => point.distance === 120), false);
+  assert.equal(result.performanceProfile.length, 300);
+  assert.deepEqual(result.performanceProfile[0], {
+    distance: 0,
+    speed: 5,
+    heartRate: 120,
+  });
+  assert.deepEqual(result.performanceProfile.at(-1), {
+    distance: 5990,
+    speed: 64.9,
+    heartRate: 179.9,
+  });
+  assert.deepEqual(
+    result.performanceProfile.find((point) => point.distance === 120),
+    { distance: 120, speed: 6.2, heartRate: null }
+  );
 });

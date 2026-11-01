@@ -86,6 +86,26 @@ export default class GarminService {
       throw new Error('Le profil altimétrique reçu du serveur est invalide.');
     }
 
-    return payload;
+    const performanceProfile =
+      payload.performanceProfile === undefined ? [] : payload.performanceProfile;
+    if (
+      !Array.isArray(performanceProfile) ||
+      !performanceProfile.every(
+        (point) =>
+          Number.isFinite(point.distance) &&
+          point.distance >= 0 &&
+          (point.speed == null ||
+            (Number.isFinite(point.speed) && point.speed >= 0)) &&
+          (point.heartRate == null ||
+            (Number.isFinite(point.heartRate) && point.heartRate > 0)) &&
+          (point.speed != null || point.heartRate != null)
+      )
+    ) {
+      throw new Error(
+        'Le profil de vitesse et de fréquence cardiaque reçu du serveur est invalide. Redémarrez le serveur Garmin et réessayez.'
+      );
+    }
+
+    return { ...payload, performanceProfile };
   }
 }

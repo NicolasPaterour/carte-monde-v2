@@ -3,7 +3,7 @@ const { unzipSync } = require('fflate');
 const MAX_ARCHIVE_SIZE = 25 * 1024 * 1024;
 const MAX_FIT_FILE_SIZE = 100 * 1024 * 1024;
 const SEMICIRCLES_TO_DEGREES = 180 / 2 ** 31;
-const MAX_ELEVATION_POINTS = 300;
+const MAX_PROFILE_POINTS = 300;
 
 async function decodeActivityArchive(archiveBytes, decodeFit = decodeFitFile) {
   if (!(archiveBytes instanceof Uint8Array) || archiveBytes.length > MAX_ARCHIVE_SIZE) {
@@ -49,7 +49,7 @@ async function decodeActivityArchive(archiveBytes, decodeFit = decodeFitFile) {
 
   return {
     coordinates,
-    elevationProfile: createElevationProfile(records),
+    ...createActivityProfiles(records),
   };
 }
 
@@ -92,28 +92,23 @@ function toCoordinate(rawLatitude, rawLongitude, scale = 1) {
   return isValidCoordinate(coordinate) ? coordinate : null;
 }
 
-function createElevationProfile(records) {
-  const profile = records
+function createActivityProfiles(records) {
+  const activityRecords = records
     .map((record) => {
-      const rawDistance = record?.distance;
-      const rawAltitude = record?.enhancedAltitude ?? record?.altitude;
-      if (rawDistance == null || rawAltitude == null) {
+      if (record?.distance == null) {
         return null;
       }
 
-      const distance = Number(rawDistance);
-      const altitude = Number(rawAltitude);
-      if (
-        !Number.isFinite(distance) ||
-        distance < 0 ||
-        !Number.isFinite(altitude)
-      ) {
+      const distance = Number(record.distance);
+      if (!Number.isFinite(distance) || distance < 0) {
         return null;
       }
 
       return {
         distance,
-        altitude,
+        altitude: toFiniteNumber(record?.enhancedAltitude ?? record?.altitude),
+        speed: toNonNegativeNumber(record?.enhancedSpeed ?? record?.speed),
+        heartRate: toPositiveNumber(record?.heartRate),
         coordinate: toCoordinate(
           record?.positionLat,
           record?.positionLong,
@@ -123,17 +118,57 @@ function createElevationProfile(records) {
     })
     .filter(Boolean);
 
-  if (profile.length < 2) {
-    return [];
-  }
-
-  const startDistance = profile[0].distance;
-  const normalizedProfile = profile.map((point) => ({
+  const startDistance = activityRecords[0]?.distance ?? 0;
+  const normalizedRecords = activityRecords.map((point) => ({
     ...point,
     distance: Math.max(0, point.distance - startDistance),
   }));
 
-  return sampleProfile(normalizedProfile, MAX_ELEVATION_POINTS);
+  const elevationProfile = normalizedRecords
+    .filter((point) => point.altitude != null)
+    .map(({ distance, altitude, coordinate }) => ({
+      distance,
+      altitude,
+      coordinate,
+    }));
+  const performanceProfile = normalizedRecords
+    .filter((point) => point.speed != null || point.heartRate != null)
+    .map(({ distance, speed, heartRate }) => ({ distance, speed, heartRate }));
+
+  return {
+    elevationProfile:
+      elevationProfile.length >= 2
+        ? sampleProfile(elevationProfile, MAX_PROFILE_POINTS)
+        : [],
+    performanceProfile: sampleProfile(performanceProfile, MAX_PROFILE_POINTS),
+  };
+}
+
+function toNonNegativeNumber(value) {
+  if (value == null) {
+    return null;
+  }
+
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function toPositiveNumber(value) {
+  if (value == null) {
+    return null;
+  }
+
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function toFiniteNumber(value) {
+  if (value == null) {
+    return null;
+  }
+
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function sampleProfile(profile, maxPoints) {
